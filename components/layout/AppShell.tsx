@@ -4,13 +4,13 @@ import { useRouter } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
 import Sidebar from './Sidebar'
 
-interface AppShellProps {
+interface Props {
   children: React.ReactNode
   title: React.ReactNode
   actions?: React.ReactNode
 }
 
-export default function AppShell({ children, title, actions }: AppShellProps) {
+export default function AppShell({ children, title, actions }: Props) {
   const { user, loading } = useAuth()
   const router = useRouter()
 
@@ -18,22 +18,22 @@ export default function AppShell({ children, title, actions }: AppShellProps) {
     if (!loading && !user) router.replace('/auth')
   }, [user, loading, router])
 
-  // Pendant le chargement → écran minimal
-  if (loading) return (
-    <div style={{
-      minHeight: '100vh', display: 'flex', alignItems: 'center',
-      justifyContent: 'center', background: 'var(--bg)'
-    }}>
-      <div style={{ textAlign: 'center' }}>
+  if (loading) {
+    return (
+      <div style={{
+        minHeight: '100vh', display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', gap: 16,
+      }}>
         <div style={{
-          width: 44, height: 44, borderRadius: 13, margin: '0 auto 16px',
+          width: 48, height: 48, borderRadius: 14,
           background: 'linear-gradient(135deg,var(--accent),var(--accent2))',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22
+          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24,
+          boxShadow: '0 0 24px rgba(99,102,241,0.4)',
         }}>💼</div>
-        <div className="spinner" style={{ width: 24, height: 24, margin: '0 auto' }} />
+        <div className="spinner" style={{ width: 22, height: 22 }} />
       </div>
-    </div>
-  )
+    )
+  }
 
   if (!user) return null
 

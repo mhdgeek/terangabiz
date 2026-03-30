@@ -11,11 +11,11 @@ export function createServerSupabaseClient() {
         get(name: string) {
           return cookieStore.get(name)?.value
         },
-        set(name: string, value: string, options: any) {
-          try { cookieStore.set({ name, value, ...options }) } catch {}
+        set(name: string, value: string, options: Parameters<typeof cookieStore.set>[2]) {
+          try { cookieStore.set({ name, value, ...options }) } catch { /* read-only context */ }
         },
-        remove(name: string, options: any) {
-          try { cookieStore.set({ name, value: '', ...options }) } catch {}
+        remove(name: string, options: Parameters<typeof cookieStore.set>[2]) {
+          try { cookieStore.set({ name, value: '', ...options }) } catch { /* read-only context */ }
         },
       },
     }

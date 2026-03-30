@@ -1,5 +1,5 @@
 'use client'
-import { createContext, useContext, useEffect, useState, ReactNode, useRef } from 'react'
+import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from 'react'
 import { User } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
 
@@ -19,47 +19,30 @@ interface AuthCtx {
   loading: boolean
   signIn: (email: string, password: string) => Promise<{ error: string | null }>
   signUp: (email: string, password: string, fullName: string, businessName: string, sectors: string[]) => Promise<{ error: string | null }>
-  signOut: () => Promise<void>
-  updateSectors: (sectors: string[]) => Promise<void>
+  signOut: () => void
   refreshProfile: () => Promise<void>
   resetPassword: (email: string) => Promise<{ error: string | null }>
 }
 
 const AuthContext = createContext<AuthCtx>({} as AuthCtx)
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
   const [loading, setLoading] = useState(true)
-  const fetchingRef = useRef(false)
 
-  const fetchProfile = async (userId: string): Promise<Profile | null> => {
-    // Évite les appels simultanés
-    if (fetchingRef.current) return null
-    fetchingRef.current = true
-
-    try {
-      for (let i = 0; i < 3; i++) {
-        const { data } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', userId)
-          .maybeSingle()
-        if (data) {
-          setProfile(data)
-          return data
-        }
-        if (i < 2) await sleep(500)
-      }
-    } finally {
-      fetchingRef.current = false
-    }
-    return null
-  }
+  const fetchProfile = useCallback(async (userId: string) => {
+    const { data } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .maybeSingle()
+    if (data) setProfile(data)
+    return data as Profile | null
+  }, [])
 
   useEffect(() => {
-    // Récupère la session existante immédiatement depuis le cache local
+    // Initial session check — reads from localStorage, instant
     supabase.auth.getSession().then(({ data: { session } }) => {
       const u = session?.user ?? null
       setUser(u)
@@ -70,19 +53,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     })
 
-    // Écoute les changements d'auth
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    // Auth state listener — handles login/logout events
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       const u = session?.user ?? null
       setUser(u)
-      if (!u) {
+      if (event === 'SIGNED_OUT') {
         setProfile(null)
         setLoading(false)
       }
-      // Le fetchProfile est géré par getSession au premier chargement
+      if (event === 'SIGNED_IN' && u) {
+        fetchProfile(u.id).finally(() => setLoading(false))
+      }
     })
 
     return () => subscription.unsubscribe()
-  }, [])
+  }, [fetchProfile])
 
   const signIn = async (email: string, password: string) => {
     const { error } = await supabase.auth.signInWithPassword({ email, password })
@@ -91,68 +76,82 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const signUp = async (
-    email: string, password: string,
-    fullName: string, businessName: string, sectors: string[]
+    email: string,
+    password: string,
+    fullName: string,
+    businessName: string,
+    sectors: string[]
   ) => {
     const { data, error } = await supabase.auth.signUp({
-      email, password,
-      options: { data: { full_name: fullName, business_name: businessName, role: 'user' } }
+      email,
+      password,
+      options: { data: { full_name: fullName, business_name: businessName } },
     })
+
     if (error) {
-      if (error.message.toLowerCase().includes('already registered')) return { error: 'Cet email est déjà utilisé' }
+      const msg = error.message.toLowerCase()
+      if (msg.includes('already registered') || msg.includes('already been registered')) {
+        return { error: 'Cet email est déjà utilisé' }
+      }
       return { error: error.message }
     }
+
     if (!data.user) return { error: 'Erreur lors de la création du compte' }
 
-    await sleep(600)
+    // Wait a moment for the DB trigger to run, then upsert to ensure profile exists
+    await new Promise(r => setTimeout(r, 800))
 
-    // Upsert profil
-    await supabase.from('profiles').upsert({
-      id: data.user.id, email, full_name: fullName,
-      business_name: businessName, role: 'user', sectors,
-      created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-    }, { onConflict: 'id' })
+    await supabase.from('profiles').upsert(
+      {
+        id: data.user.id,
+        email,
+        full_name: fullName,
+        business_name: businessName,
+        role: 'user',
+        sectors,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'id' }
+    )
 
-    const newProfile: Profile = {
-      id: data.user.id, email, full_name: fullName,
-      business_name: businessName, role: 'user', sectors,
+    setProfile({
+      id: data.user.id,
+      email,
+      full_name: fullName,
+      business_name: businessName,
+      role: 'user',
+      sectors,
       created_at: new Date().toISOString(),
-    }
-    setProfile(newProfile)
+    })
+
     return { error: null }
   }
 
-  // Déconnexion INSTANTANÉE — on redirige d'abord, Supabase suit derrière
-  const signOut = async () => {
+  // Instant sign out — clear local state immediately, then call Supabase async
+  const signOut = () => {
     setUser(null)
     setProfile(null)
     setLoading(false)
-    // On appelle signOut en arrière-plan sans attendre
-    supabase.auth.signOut()
+    supabase.auth.signOut() // fire and forget
   }
 
-  const updateSectors = async (sectors: string[]) => {
-    if (!user) return
-    await supabase.from('profiles')
-      .update({ sectors, updated_at: new Date().toISOString() })
-      .eq('id', user.id)
-    setProfile(prev => prev ? { ...prev, sectors } : prev)
-  }
-
-  const refreshProfile = async () => {
+  const refreshProfile = useCallback(async () => {
     if (user) await fetchProfile(user.id)
-  }
+  }, [user, fetchProfile])
 
   const resetPassword = async (email: string) => {
+    const origin = typeof window !== 'undefined' ? window.location.origin : ''
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/reset-password`,
+      redirectTo: `${origin}/reset-password`,
     })
     if (error) return { error: error.message }
     return { error: null }
   }
 
   return (
-    <AuthContext.Provider value={{ user, profile, loading, signIn, signUp, signOut, updateSectors, refreshProfile, resetPassword }}>
+    <AuthContext.Provider
+      value={{ user, profile, loading, signIn, signUp, signOut, refreshProfile, resetPassword }}
+    >
       {children}
     </AuthContext.Provider>
   )
